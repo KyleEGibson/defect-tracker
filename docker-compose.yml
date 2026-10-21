@@ -1,0 +1,33 @@
+# Full stack: PostgreSQL + API + web (nginx). Open http://localhost:8080
+#   docker compose up -d --build --wait
+# Demo users (password demo-pass-1234): admin, mlopez (lead), kgibson / achen / rpatel (engineers), viewer
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: tracker
+      POSTGRES_DB: tracker
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker"]
+      interval: 3s
+      retries: 20
+
+  api:
+    build: ./backend
+    environment:
+      TRACKER_DATABASE_URL: postgresql+psycopg://tracker:tracker@db:5432/tracker
+      TRACKER_SEED_DEMO: "true"
+      TRACKER_JWT_SECRET: ${TRACKER_JWT_SECRET:-local-compose-secret-not-for-production-use}
+    depends_on:
+      db: { condition: service_healthy }
+
+  web:
+    build: ./frontend
+    ports: ["127.0.0.1:8080:80"]
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  pgdata:
