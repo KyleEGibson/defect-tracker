@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: API tests (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: tracker
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: pytest
+        env:
+          TRACKER_TEST_DATABASE_URL: ${{ matrix.db == 'postgres' && 'postgresql+psycopg://postgres:test@localhost:5432/tracker' || 'sqlite://' }}
+        run: pytest -q
+
+  frontend:
+    name: Web (lint, types, unit tests, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+  system:
+    name: End-to-end + load test (full stack)
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - run: docker compose up -d --build --wait
+      - name: Playwright
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - name: JMeter load test with thresholds
+        run: ./loadtest/run.sh 20 25
+      - name: Load test summary
+        if: always()
+        run: python3 loadtest/check_results.py loadtest/results/results.jtl >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            e2e/playwright-report/
+            loadtest/results/report/
+      - run: docker compose down -v
+        if: always()
